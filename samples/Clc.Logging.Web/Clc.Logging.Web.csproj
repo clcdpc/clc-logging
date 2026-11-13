@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <ClcLoggingPackageVersion Condition="'$(ClcLoggingPackageVersion)' == ''">0.0.0-local</ClcLoggingPackageVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Clc.Logging" Version="$(ClcLoggingPackageVersion)" />
+  </ItemGroup>
+</Project>

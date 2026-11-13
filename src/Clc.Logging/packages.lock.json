@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Clc.Configuration": {
+        "type": "Direct",
+        "requested": "[0.1.0-beta.4, )",
+        "resolved": "0.1.0-beta.4",
+        "contentHash": "jUEzj1jKkScxLUdSGrVfq7cI9C1kxjXjgSVkkCItpO5NSNH0XWy9AC398xJix/tB6URFZgAnv9rkhE7Vsy9NbA=="
+      },
+      "NLog": {
+        "type": "Direct",
+        "requested": "[6.2.2, )",
+        "resolved": "6.2.2",
+        "contentHash": "Hoxigm/d7wY/+y4y2ILF2ERSojhxgLd8ASBZQbrnm52jB5NHkF4AWW5tZzMxJ/HTOp0bLwClGOokrA31iSXuMA=="
+      },
+      "NLog.Extensions.Logging": {
+        "type": "Direct",
+        "requested": "[6.3.0, )",
+        "resolved": "6.3.0",
+        "contentHash": "ZTgiFC5LrNp32CrgqfOf2CIQmfIVEh2/E2IknNu1c/AofW/Gi7J+rEpIa7yAJoH+BTb1RX13D3XZ4HB0LKzT5A==",
+        "dependencies": {
+          "NLog": "6.2.2"
+        }
+      }
+    }
+  }
+}

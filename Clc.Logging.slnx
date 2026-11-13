@@ -1,0 +1,4 @@
+<Solution>
+  <Folder Name="/src/"><Project Path="src/Clc.Logging/Clc.Logging.csproj" /></Folder>
+  <Folder Name="/tests/"><Project Path="tests/Clc.Logging.Tests/Clc.Logging.Tests.csproj" /></Folder>
+</Solution>

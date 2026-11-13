@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <ClcLoggingPackageVersion Condition="'$(ClcLoggingPackageVersion)' == ''">0.0.0-local</ClcLoggingPackageVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Clc.Logging" Version="$(ClcLoggingPackageVersion)" />
+  </ItemGroup>
+</Project>
