@@ -1,10 +1,12 @@
 # Clc.Logging
 
-Opinionated .NET 10 logging for CLC applications: ordinary `ILogger<T>`, NLog underneath, daily JSON Lines files, and stderr when files cannot be written. No `nlog.config` or new logger interface is required. This draft is a local package, version `0.0.0-local`.
+Opinionated .NET 10 logging for CLC applications: ordinary `ILogger<T>`, NLog underneath, daily JSON Lines files, and stderr when files cannot be written. No `nlog.config` or new logger interface is required. Release package versions come from Git tags; local builds default to `0.0.0-local`.
 
 ## Web and worker setup
 
-Reference `Clc.Logging` in the application. These examples compile with the .NET 10 Web SDK and .NET SDK respectively; the package supplies the shared framework reference needed by the worker.
+Reference `Clc.Logging` in the application. These examples compile with the .NET 10 Web SDK and .NET SDK respectively. Worker applications also reference `Microsoft.Extensions.Hosting` to construct their host.
+
+**Release blocker:** the published `Clc.Configuration 0.1.0-beta.4` dependency still requires the ASP.NET Core shared runtime transitively. Clc.Logging itself uses Microsoft.Extensions packages. Workers currently need ASP.NET Core 10 until a dependency fix is published and adopted here. Tagged builds enforce base-runtime-only worker execution and cannot publish while this blocker remains.
 
 ```csharp
 using Clc.Logging;
@@ -143,5 +145,21 @@ dotnet pack src/Clc.Logging/Clc.Logging.csproj -c Release --no-build --no-restor
 ```
 
 The MSTest suite uses isolated temporary directories. `Test-Package.ps1` inspects package contents/metadata, restores both sample consumers into fresh projects with an isolated package cache, runs a real worker and loopback HTTP request, and checks their JSON events and shutdown output. These sample projects have package references, never project references. All dependencies except the local `Clc.Logging` artifact come from NuGet.org. Samples are outside the main solution so a clean library build does not depend on an already packed artifact. No consuming application or service is modified.
+
+The script evaluates the local `PackageVersion` unless supplied with `-PackageVersion <version>`. It checks the packed version, assembly metadata, restored assembly hash, runtimeconfig and dependency graph. It copies only the installed .NET 10 base runtime and native host to an isolated dotnet root and verifies its runtime inventory before executing the worker. With the current dependency, ordinary verification reports and exercises the ASP.NET absence failure before running on the installed full runtime; `-RequireBaseRuntime` fails instead. `Test-ReleaseVersions.ps1` verifies stable and prerelease fixtures. Stable packing currently rejects the prerelease Configuration dependency with `NU5104`; once a stable dependency is adopted, both fixtures are packed and consumed.
+
+## Release workflow
+
+`.github/workflows/build-test-publish.yaml` follows the CLC `build-test-publish` pattern. Pull requests and pushes to `master` build/test on Windows and Linux, verify stable/prerelease package consumers, and pack/consume the evaluated CI version. Tags must be `v<major>.<minor>.<patch>` with an optional SemVer prerelease suffix, such as `v1.2.3-beta.2`; malformed versions, leading zeroes and build metadata are rejected. The tag supplies `Version` and `PackageVersion`; no project or README version edit is needed. Untagged CI uses `0.0.0-ci.<run>.<attempt>`.
+
+Only a valid pushed version tag can publish, after both platforms pass all checks including `-RequireBaseRuntime`. The publish job downloads the verified Linux artifact, checks its SHA-256 sidecar and tag, then obtains a short-lived NuGet key using `NuGet/login@v1`. It submits once without waiting for NuGet indexing. This repository is not release-ready until the Configuration dependency blocker above is resolved.
+
+Before the first release, an administrator must:
+
+1. Confirm `Clc.Logging` package ID/prefix availability and ownership by the `clcdpc` NuGet organization.
+2. Add a NuGet trusted publishing policy owned by `clcdpc`, scoped to `Clc.Logging`, with GitHub owner `clcdpc`, repository `clc-logging`, workflow file `build-test-publish.yaml` and environment `nuget-production`. The workflow uses the existing CLC NuGet login identity `mfields`.
+3. Create the GitHub `nuget-production` environment, restrict deployments to version tags, and apply the CLC reviewer protections. Only the publish job receives `id-token: write`; no long-lived API key is needed.
+
+These are required external setup steps; this change does not configure or verify them. See [NuGet trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing).
 
 MIT; Central Library Consortium.

@@ -10,9 +10,10 @@
     <IsPackable>true</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <InternalsVisibleTo Include="Clc.Logging.Tests" />
     <PackageReference Include="Clc.Configuration" Version="0.1.0-beta.4" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="NLog" Version="6.2.2" />
     <PackageReference Include="NLog.Extensions.Logging" Version="6.3.0" />
     <None Include="../../README.md" Pack="true" PackagePath="/" />

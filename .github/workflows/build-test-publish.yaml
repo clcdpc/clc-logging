@@ -1,0 +1,152 @@
+name: build-test-publish
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_VERSION: 10.0.303
+  BUILD_CONFIGURATION: Release
+  PACKAGE_PROJECT: src/Clc.Logging/Clc.Logging.csproj
+  PACKAGE_OUTPUT_DIR: artifacts/packages
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
+
+jobs:
+  build-test:
+    name: build and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/artifacts/nuget-packages
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Resolve package version for this ref
+        id: version
+        shell: bash
+        run: |
+          source scripts/resolve_package_version.sh
+          package_version="$(resolve_package_version "$GITHUB_REF" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT")"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "Resolved package version: $package_version"
+
+      - name: Check package version resolution
+        shell: bash
+        run: bash scripts/test_package_version.sh
+
+      - name: Restore, build and test
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+        run: |
+          dotnet restore Clc.Logging.slnx --locked-mode "-p:Version=$env:PACKAGE_VERSION" "-p:PackageVersion=$env:PACKAGE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build Clc.Logging.slnx -c $env:BUILD_CONFIGURATION --no-restore "-p:Version=$env:PACKAGE_VERSION" "-p:PackageVersion=$env:PACKAGE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test --solution Clc.Logging.slnx -c $env:BUILD_CONFIGURATION --no-build --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify stable and prerelease package consumers
+        run: ./scripts/Test-ReleaseVersions.ps1
+
+      - name: Pack and verify the evaluated version
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+        run: |
+          dotnet pack $env:PACKAGE_PROJECT -c $env:BUILD_CONFIGURATION --no-restore -o $env:PACKAGE_OUTPUT_DIR "-p:Version=$env:PACKAGE_VERSION" "-p:PackageVersion=$env:PACKAGE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/Test-Package.ps1 -PackageVersion $env:PACKAGE_VERSION -RequireBaseRuntime:($env:GITHUB_REF.StartsWith('refs/tags/'))
+          $package = Join-Path $env:PACKAGE_OUTPUT_DIR "Clc.Logging.$env:PACKAGE_VERSION.nupkg"
+          $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($package))" | Set-Content -LiteralPath "$package.sha256" -Encoding utf8NoBOM
+
+      - name: Upload verified package artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: clc-logging-${{ steps.version.outputs.package_version }}
+          if-no-files-found: error
+          path: ${{ env.PACKAGE_OUTPUT_DIR }}/Clc.Logging.${{ steps.version.outputs.package_version }}.nupkg*
+
+  publish:
+    name: publish package to nuget.org
+    runs-on: ubuntu-latest
+    needs: build-test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 10
+    environment: nuget-production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve and validate release version
+        id: version
+        shell: bash
+        run: |
+          source scripts/resolve_package_version.sh
+          package_version="$(resolve_package_version "$GITHUB_REF")"
+          test "$GITHUB_REF_NAME" = "v$package_version"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+
+      - name: Download verified package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: clc-logging-${{ steps.version.outputs.package_version }}
+          path: ${{ env.PACKAGE_OUTPUT_DIR }}
+
+      - name: Verify package checksum
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+        run: |
+          cd "$PACKAGE_OUTPUT_DIR"
+          test -s "Clc.Logging.$PACKAGE_VERSION.nupkg"
+          sha256sum --check "Clc.Logging.$PACKAGE_VERSION.nupkg.sha256"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Login to NuGet with trusted publishing
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: mfields
+
+      - name: Publish package to nuget.org
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push "$env:PACKAGE_OUTPUT_DIR/Clc.Logging.$env:PACKAGE_VERSION.nupkg" --api-key $env:NUGET_API_KEY --source $env:NUGET_SOURCE --skip-duplicate
