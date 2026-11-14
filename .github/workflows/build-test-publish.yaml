@@ -82,7 +82,7 @@ jobs:
         run: |
           dotnet pack $env:PACKAGE_PROJECT -c $env:BUILD_CONFIGURATION --no-restore -o $env:PACKAGE_OUTPUT_DIR "-p:Version=$env:PACKAGE_VERSION" "-p:PackageVersion=$env:PACKAGE_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/Test-Package.ps1 -PackageVersion $env:PACKAGE_VERSION -RequireBaseRuntime:($env:GITHUB_REF.StartsWith('refs/tags/'))
+          ./scripts/Test-Package.ps1 -PackageVersion $env:PACKAGE_VERSION
           $package = Join-Path $env:PACKAGE_OUTPUT_DIR "Clc.Logging.$env:PACKAGE_VERSION.nupkg"
           $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $([IO.Path]::GetFileName($package))" | Set-Content -LiteralPath "$package.sha256" -Encoding utf8NoBOM

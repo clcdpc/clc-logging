@@ -1,15 +1,20 @@
+using Clc.Configuration;
 using Clc.Logging;
 using Microsoft.Extensions.Logging;
 
-ClcLogging? logging = null;
-try
+var builder = WebApplication.CreateBuilder();
+var paths = ConfigurationFixture.Paths(args.Single());
+ConfigurationFixture.Initialize(builder, paths);
+builder.AddClcLogging();
+builder.WebHost.UseUrls("http://127.0.0.1:0");
+await using (var app = builder.Build())
 {
-    logging = ClcLogging.CreateForDirectory(args.Single());
-    logging.Logger.LogInformation("Web bootstrap");
-    var builder = WebApplication.CreateBuilder();
-    builder.AddClcLogging(logging);
-    builder.WebHost.UseUrls("http://127.0.0.1:0");
-    await using var app = builder.Build();
+    var logging = app.Services.GetRequiredService<ClcLogging>();
+    if (!ReferenceEquals(paths, builder.GetClcApplicationPaths()) ||
+        logging.DirectoryPath != Path.Combine(paths.ApplicationDataDirectory, "Logs") ||
+        logging.ApplicationName != Path.GetFileName(paths.ApplicationDataDirectory)) {
+        throw new InvalidOperationException("Web did not reuse configured application paths.");
+    }
     app.MapGet("/", (ILoggerFactory factory) =>
     {
         var logger = factory.CreateLogger("Web.Sample");
@@ -21,13 +26,5 @@ try
     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     if (await client.GetStringAsync(app.Urls.Single()) != "ok") { throw new InvalidOperationException("Unexpected HTTP response."); }
     await app.StopAsync();
-    Console.WriteLine("Web package consumer passed.");
-    return 0;
 }
-catch (Exception error)
-{
-    if (logging is null) { ClcLogging.WriteStartupFailure(error); }
-    else { logging.LogFatal(error); }
-    return 1;
-}
-finally { logging?.Dispose(); }
+Console.WriteLine("Web package consumer passed.");

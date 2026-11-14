@@ -1,4 +1,4 @@
-param([string]$PackageVersion, [switch]$RequireBaseRuntime)
+param([string]$PackageVersion)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -95,6 +95,7 @@ try {
 </configuration>
 "@ | Set-Content -LiteralPath (Join-Path $run 'NuGet.Config')
     Copy-Item -LiteralPath (Join-Path $repository 'Directory.Build.props') -Destination $run
+    Copy-Item -LiteralPath (Join-Path $repository 'samples/ConfigurationFixture.cs') -Destination $run
     foreach ($kind in @('Worker', 'Web')) {
         $sample = Join-Path $repository "samples/Clc.Logging.$kind"
         $consumer = Join-Path $run $kind
@@ -131,22 +132,13 @@ try {
                 @($assets.targets.Values | ForEach-Object { $_.Values | ForEach-Object { $_['frameworkReferences'] } }) |
                 Where-Object { $_ } | Sort-Object -Unique)
             Write-Output "Worker restored framework references: $($frameworkReferences -join ', ')"
-            if ('Microsoft.AspNetCore.App' -in $frameworkNames) {
-                # Verify the known upstream blocker against the actual base-runtime host.
-                $failure = & $baseHost $assembly $dataDirectory 2>&1 | Out-String
-                if ($LASTEXITCODE -eq 0 -or $failure -notmatch 'Microsoft.AspNetCore.App') { throw 'Expected the upstream ASP.NET runtime requirement to prevent startup.' }
-                if ($RequireBaseRuntime) { throw 'Release blocked: Clc.Configuration still requires Microsoft.AspNetCore.App. Update to a published dependency fix before releasing.' }
-                Write-Warning 'Worker base-runtime execution is blocked by the published Clc.Configuration dependency; release verification will fail.'
-                dotnet $assembly $dataDirectory
+            if ($frameworkNames.Count -ne 1 -or $frameworkNames[0] -ne 'Microsoft.NETCore.App' -or
+                'Microsoft.AspNetCore.App' -in $frameworkReferences -or
+                @($assets.libraries.Keys | Where-Object { $_ -like 'Microsoft.AspNetCore.*' }).Count -ne 0 -or
+                @($dependencies.libraries.Keys | Where-Object { $_ -like 'Microsoft.AspNetCore.*' }).Count -ne 0) {
+                throw 'Worker must depend only on the base shared framework and Microsoft.Extensions packages.'
             }
-            else {
-                if ($frameworkNames.Count -ne 1 -or $frameworkNames[0] -ne 'Microsoft.NETCore.App' -or
-                    'Microsoft.AspNetCore.App' -in $frameworkReferences -or
-                    @($dependencies.libraries.Keys | Where-Object { $_ -like 'Microsoft.AspNetCore.*' }).Count -ne 0) {
-                    throw 'Worker must depend only on the base shared framework and Microsoft.Extensions packages.'
-                }
-                & $baseHost $assembly $dataDirectory
-            }
+            & $baseHost $assembly $dataDirectory
         }
         else {
             if ('Microsoft.AspNetCore.App' -notin $frameworkNames) { throw 'Web SDK consumer lost its ASP.NET framework reference.' }
@@ -171,4 +163,4 @@ finally {
         [IO.Path]::GetFileName($resolved) -notlike 'Clc.Logging.Package-*') { throw 'Unexpected temporary cleanup target.' }
     Remove-Item -LiteralPath $resolved -Recurse -Force
 }
-Write-Output 'Package inspection and hosted consumers passed; any base-runtime release blocker is reported above.'
+Write-Output 'Package inspection and hosted consumers passed, including isolated base-runtime Worker execution.'

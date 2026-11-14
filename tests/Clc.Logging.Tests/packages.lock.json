@@ -78,8 +78,13 @@
       },
       "Clc.Configuration": {
         "type": "Transitive",
-        "resolved": "0.1.0-beta.4",
-        "contentHash": "jUEzj1jKkScxLUdSGrVfq7cI9C1kxjXjgSVkkCItpO5NSNH0XWy9AC398xJix/tB6URFZgAnv9rkhE7Vsy9NbA=="
+        "resolved": "0.1.0-beta.5",
+        "contentHash": "42fUrWLftqLz6J/fPX+6ds2nLVsSZhHMj/kb81X9mt5Z0dn3v0dvS2NXEdp+58enuxDrA4Vo5Lhlq1nuFvicSg==",
+        "dependencies": {
+          "Microsoft.Extensions.Configuration.Json": "10.0.0",
+          "Microsoft.Extensions.Hosting.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.0"
+        }
       },
       "Microsoft.ApplicationInsights": {
         "type": "Transitive",
@@ -414,7 +419,7 @@
       "clc.logging": {
         "type": "Project",
         "dependencies": {
-          "Clc.Configuration": "[0.1.0-beta.4, )",
+          "Clc.Configuration": "[0.1.0-beta.5, )",
           "Microsoft.Extensions.Hosting.Abstractions": "[10.0.0, )",
           "Microsoft.Extensions.Logging": "[10.0.0, )",
           "NLog": "[6.2.2, )",

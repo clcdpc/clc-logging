@@ -1,30 +1,27 @@
+using Clc.Configuration;
 using Clc.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-// An absolute existing data root keeps this executable smoke fixture isolated.
-// Production can use ClcLogging.Create("my-worker") instead.
-ClcLogging? logging = null;
-try
+// Only the fixture needs an absolute temporary root. Normal startup uses
+// builder.AddClcConfiguration("clc-scheduler-worker") before AddClcLogging().
+var builder = Host.CreateApplicationBuilder();
+var paths = ConfigurationFixture.Paths(args.Single());
+ConfigurationFixture.Initialize(builder, paths);
+builder.AddClcLogging();
+builder.Services.AddHostedService<Worker>();
+using (var host = builder.Build())
 {
-    logging = ClcLogging.CreateForDirectory(args.Single());
-    logging.Logger.LogInformation("Worker bootstrap");
-    var builder = Host.CreateApplicationBuilder();
-    builder.AddClcLogging(logging);
-    builder.Services.AddHostedService<Worker>();
-    using var host = builder.Build();
+    var logging = host.Services.GetRequiredService<ClcLogging>();
+    if (!ReferenceEquals(paths, builder.GetClcApplicationPaths()) ||
+        logging.DirectoryPath != Path.Combine(paths.ApplicationDataDirectory, "Logs") ||
+        logging.ApplicationName != Path.GetFileName(paths.ApplicationDataDirectory)) {
+        throw new InvalidOperationException("Worker did not reuse configured application paths.");
+    }
     await host.RunAsync();
-    Console.WriteLine("Worker package consumer passed.");
-    return 0;
 }
-catch (Exception error)
-{
-    if (logging is null) { ClcLogging.WriteStartupFailure(error); }
-    else { logging.LogFatal(error); }
-    return 1;
-}
-finally { logging?.Dispose(); }
+Console.WriteLine("Worker package consumer passed.");
 
 sealed class Worker(ILogger<Worker> logger, IHostApplicationLifetime lifetime) : IHostedService, IDisposable
 {
