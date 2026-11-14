@@ -6,37 +6,42 @@ Opinionated .NET 10 logging for CLC applications: ordinary `ILogger<T>`, NLog un
 
 Reference `Clc.Logging` in the application. These examples compile with the .NET 10 Web SDK and .NET SDK respectively. Worker applications also reference `Microsoft.Extensions.Hosting` to construct their host.
 
-**Release blocker:** the published `Clc.Configuration 0.1.0-beta.4` dependency still requires the ASP.NET Core shared runtime transitively. Clc.Logging itself uses Microsoft.Extensions packages. Workers currently need ASP.NET Core 10 until a dependency fix is published and adopted here. Tagged builds enforce base-runtime-only worker execution and cannot publish while this blocker remains.
+The published `Clc.Configuration 0.1.0-beta.5` dependency supplies the configured-paths helper and the worker-runtime correction. Worker consumers require only `Microsoft.NETCore.App`; package verification enforces this in PR, master and tagged builds.
 
 ```csharp
+using Clc.Configuration;
 using Clc.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
-// Load application configuration before logging registration.
-builder.AddClcLogging("my-web");
+
+builder.AddClcConfiguration("clc-ssrs-web");
+builder.AddClcLogging();
+
 var app = builder.Build();
-app.MapGet("/", (ILoggerFactory factory) =>
-{
-    factory.CreateLogger("MyWeb").LogInformation("Health check");
-    return "ok";
-});
 await app.RunAsync();
 ```
 
 ```csharp
+using Clc.Configuration;
 using Clc.Logging;
 using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
-builder.AddClcLogging("my-worker");
-// Register the application's BackgroundService/IHostedService here.
+
+builder.AddClcConfiguration("clc-scheduler-worker");
+builder.AddClcLogging();
+
+// Register application hosted services here.
+
 using var host = builder.Build();
 await host.RunAsync();
 ```
 
 Both use the same `IHostApplicationBuilder` extension. The builder owns logging and disposes it with the host. Register once, before `Build()`. The package replaces the builder's existing providers and filter rules; add any extra `builder.Logging.AddFilter(...)` calls **after** `AddClcLogging`. Consumers keep using message templates, scopes and `EventId` normally.
 
-`Clc.Configuration` **0.1.0-beta.4**, restored from NuGet.org, supplies path resolution. The package does not load application configuration itself. If the application has already resolved paths, reuse that object:
+Clc.Configuration owns the selected application identity. After `AddClcConfiguration` or `AddClcConfigurationWithBootstrap` succeeds, Clc.Logging retrieves its previously resolved paths through `builder.GetClcApplicationPaths()`. Supply the directory name only once in normal startup. Calling `AddClcLogging()` before successful configuration initialization throws with the required startup order, without changing logging providers or filters. Logging does not infer a name from the assembly, executable, environment or configuration file.
+
+The explicit-name overload remains available for applications that use logging without Clc.Configuration initialization: `builder.AddClcLogging("my-web")`. The explicit-paths overload supports independently resolved paths:
 
 ```csharp
 using Clc.Configuration;
@@ -44,7 +49,6 @@ using Clc.Logging;
 
 var paths = ClcApplicationPaths.Resolve("my-web");
 var builder = WebApplication.CreateBuilder(args);
-// For apps using Clc.Configuration, call builder.AddClcConfiguration("my-web") here.
 builder.AddClcLogging(paths);
 ```
 
@@ -52,20 +56,22 @@ The directory's name is the single application identity. Files go to `<Applicati
 
 ## Early startup and fatal failures
 
-Use a caller-owned instance to cover configuration and host construction failures. It writes bootstrap events to stderr until registration reads the application's logging settings. Bootstrap events are not replayed into the file. The same instance stays alive after the host is disposed so the outer catch can report a fatal failure:
+Use a caller-owned instance to cover configuration and host construction failures, before configured paths are available on a builder. This separate startup pattern still needs an explicit identity. It writes bootstrap events to stderr until registration reads the application's logging settings. Bootstrap events are not replayed into the file. The same instance stays alive after the host is disposed so the outer catch can report a fatal failure:
 
 ```csharp
+using Clc.Configuration;
 using Clc.Logging;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
+const string applicationDirectoryName = "clc-scheduler-worker";
 ClcLogging? logging = null;
 try
 {
-    logging = ClcLogging.Create("my-worker");
+    logging = ClcLogging.Create(applicationDirectoryName);
     logging.Logger.LogInformation("Starting application");
     var builder = Host.CreateApplicationBuilder(args);
-    // Load the application's configuration here.
+    builder.AddClcConfiguration(applicationDirectoryName);
     builder.AddClcLogging(logging);
     using var host = builder.Build();
     await host.RunAsync();
@@ -89,7 +95,7 @@ Dispose the host before the caller-owned logging instance. Logging remains avail
 Settings are a startup snapshot. Configuration changes require a restart. The optional callback runs during registration, after configuration is read:
 
 ```csharp
-builder.AddClcLogging("my-web", options =>
+builder.AddClcLogging(options =>
 {
     options.LogLevels["MyWeb.Diagnostics"] = LogLevel.Debug;
     options.FlushTimeout = TimeSpan.FromSeconds(5);
@@ -142,23 +148,25 @@ dotnet build Clc.Logging.slnx -c Release --no-restore
 dotnet test --solution Clc.Logging.slnx -c Release --no-build --no-restore
 dotnet pack src/Clc.Logging/Clc.Logging.csproj -c Release --no-build --no-restore -o artifacts/packages
 ./scripts/Test-Package.ps1
+./scripts/Test-ReleaseVersions.ps1
 ```
 
-The MSTest suite uses isolated temporary directories. `Test-Package.ps1` inspects package contents/metadata, restores both sample consumers into fresh projects with an isolated package cache, runs a real worker and loopback HTTP request, and checks their JSON events and shutdown output. These sample projects have package references, never project references. All dependencies except the local `Clc.Logging` artifact come from NuGet.org. Samples are outside the main solution so a clean library build does not depend on an already packed artifact. No consuming application or service is modified.
+The MSTest suite uses isolated temporary directories. `Test-Package.ps1` inspects package contents/metadata, restores both sample consumers into fresh projects with an isolated package cache, runs a real worker and loopback HTTP request through `AddClcLogging()`, and checks their JSON events and shutdown output. These sample projects have package references, never project references. All dependencies except the local `Clc.Logging` artifact come from NuGet.org. The shared test-only `samples/ConfigurationFixture.cs` invokes the published Configuration assembly's existing internal initialization seams with temporary paths, then exercises public path retrieval and logging registration. It avoids writes to production ProgramData and adds no upstream API. Samples are outside the main solution so a clean library build does not depend on an already packed artifact. No consuming application or service is modified.
 
-The script evaluates the local `PackageVersion` unless supplied with `-PackageVersion <version>`. It checks the packed version, assembly metadata, restored assembly hash, runtimeconfig and dependency graph. It copies only the installed .NET 10 base runtime and native host to an isolated dotnet root and verifies its runtime inventory before executing the worker. With the current dependency, ordinary verification reports and exercises the ASP.NET absence failure before running on the installed full runtime; `-RequireBaseRuntime` fails instead. `Test-ReleaseVersions.ps1` verifies stable and prerelease fixtures. Stable packing currently rejects the prerelease Configuration dependency with `NU5104`; once a stable dependency is adopted, both fixtures are packed and consumed.
+The script evaluates the local `PackageVersion` unless supplied with `-PackageVersion <version>`. It checks package identity, project/repository metadata, assembly metadata, restored assembly hash, runtimeconfig and dependency graph. It copies only the installed .NET 10 base runtime and native host to an isolated dotnet root, verifies its runtime inventory and requires the worker to execute successfully there. An ASP.NET framework dependency in the worker runtime configuration or restored graph fails verification. `Test-ReleaseVersions.ps1` requires prerelease packing and consumption to succeed and verifies that stable packing rejects the prerelease Configuration dependency with `NU5104`. The published prerelease Configuration dependency supports a Logging prerelease; stable Logging packaging requires a suitable stable dependency.
 
 ## Release workflow
 
 `.github/workflows/build-test-publish.yaml` follows the CLC `build-test-publish` pattern. Pull requests and pushes to `master` build/test on Windows and Linux, verify stable/prerelease package consumers, and pack/consume the evaluated CI version. Tags must be `v<major>.<minor>.<patch>` with an optional SemVer prerelease suffix, such as `v1.2.3-beta.2`; malformed versions, leading zeroes and build metadata are rejected. The tag supplies `Version` and `PackageVersion`; no project or README version edit is needed. Untagged CI uses `0.0.0-ci.<run>.<attempt>`.
 
-Only a valid pushed version tag can publish, after both platforms pass all checks including `-RequireBaseRuntime`. The publish job downloads the verified Linux artifact, checks its SHA-256 sidecar and tag, then obtains a short-lived NuGet key using `NuGet/login@v1`. It submits once without waiting for NuGet indexing. This repository is not release-ready until the Configuration dependency blocker above is resolved.
+Only a valid pushed version tag can publish, after both platforms pass all checks including mandatory base-runtime Worker execution. The publish job downloads the verified Linux artifact, checks its SHA-256 sidecar and tag, then obtains a short-lived NuGet key using `NuGet/login@v1`. An authorized version-tag push and successful validation allow unattended publishing without an additional human approval step. Ordinary `master` pushes and pull requests only validate. The Configuration runtime blocker is resolved by the published dependency; first-prerelease publishing still requires the external setup below.
 
 Before the first release, an administrator must:
 
 1. Confirm `Clc.Logging` package ID/prefix availability and ownership by the `clcdpc` NuGet organization.
-2. Add a NuGet trusted publishing policy owned by `clcdpc`, scoped to `Clc.Logging`, with GitHub owner `clcdpc`, repository `clc-logging`, workflow file `build-test-publish.yaml` and environment `nuget-production`. The workflow uses the existing CLC NuGet login identity `mfields`.
-3. Create the GitHub `nuget-production` environment, restrict deployments to version tags, and apply the CLC reviewer protections. Only the publish job receives `id-token: write`; no long-lived API key is needed.
+2. Add a NuGet trusted publishing policy owned by `clcdpc`, scoped to `Clc.Logging`, with GitHub owner `clcdpc`, repository `clc-logging`, workflow file `build-test-publish.yaml` and environment `nuget-production`. Keep the existing CLC NuGet login identity `mfields` authorized for that organization and policy.
+3. Create the GitHub `nuget-production` environment with selected deployment tags matching `v*` and no permitted branches. The workflow enforces the full valid SemVer tag format. Leave required environment reviewers and other manual approval gates disabled. Only the publish job receives `id-token: write`; no long-lived API key is needed.
+4. Protect `master` from direct pushes, force pushes and deletion, and require changes through pull requests. Scope these repository rules to `master`; ordinary task and pull request branches need no additional restrictions.
 
 These are required external setup steps; this change does not configure or verify them. See [NuGet trusted publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing).
 

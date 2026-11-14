@@ -6,6 +6,7 @@
     <ClcLoggingPackageVersion Condition="'$(ClcLoggingPackageVersion)' == ''">0.0.0-local</ClcLoggingPackageVersion>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../ConfigurationFixture.cs" Link="ConfigurationFixture.cs" />
     <PackageReference Include="Clc.Logging" Version="$(ClcLoggingPackageVersion)" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
   </ItemGroup>

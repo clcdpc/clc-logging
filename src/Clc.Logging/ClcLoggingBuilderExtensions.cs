@@ -7,6 +7,14 @@ namespace Clc.Logging;
 
 public static class ClcLoggingBuilderExtensions
 {
+    /// <summary>Registers host-owned logging using paths established by Clc.Configuration.</summary>
+    /// <remarks>Call AddClcConfiguration or AddClcConfigurationWithBootstrap successfully first.</remarks>
+    public static IHostApplicationBuilder AddClcLogging(this IHostApplicationBuilder builder, Action<ClcLoggingOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.AddClcLogging(builder.GetClcApplicationPaths(), configure);
+    }
+
     public static IHostApplicationBuilder AddClcLogging(this IHostApplicationBuilder builder, string applicationDirectoryName, Action<ClcLoggingOptions>? configure = null) =>
         AddOwned(builder, () => ClcLogging.Create(applicationDirectoryName, configure));
 
