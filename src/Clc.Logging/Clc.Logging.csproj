@@ -5,6 +5,9 @@
     <Description>Opinionated CLC file logging through NLog and Microsoft ILogger.</Description>
     <Authors>Central Library Consortium</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/clcdpc/clc-logging</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/clcdpc/clc-logging</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>logging;hosting;nlog;clc</PackageTags>
     <IsPackable>true</IsPackable>

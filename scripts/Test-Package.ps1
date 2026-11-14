@@ -38,6 +38,11 @@ try {
     if ($nuspec.package.metadata.id -cne 'Clc.Logging' -or $nuspec.package.metadata.version -cne $PackageVersion) {
         throw 'Package identity/version does not match the evaluated build version.'
     }
+    if ($nuspec.package.metadata.projectUrl -cne 'https://github.com/clcdpc/clc-logging' -or
+        $nuspec.package.metadata.repository.url -cne 'https://github.com/clcdpc/clc-logging' -or
+        $nuspec.package.metadata.repository.type -cne 'git') {
+        throw 'Package project/repository metadata does not identify the Clc.Logging Git repository.'
+    }
     if ($metadata -match '<frameworkReference\b') { throw 'Clc.Logging must not declare a shared framework requirement.' }
     foreach ($dependency in @('Clc.Configuration', 'Microsoft.Extensions.Hosting.Abstractions', 'Microsoft.Extensions.Logging', 'NLog', 'NLog.Extensions.Logging')) {
         if (!$metadata.Contains("id=`"$dependency`"")) { throw "Missing dependency $dependency" }
