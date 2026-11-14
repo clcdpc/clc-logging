@@ -37,6 +37,22 @@
           "Microsoft.Extensions.Options": "10.0.0"
         }
       },
+      "Microsoft.Extensions.Logging.Configuration": {
+        "type": "Direct",
+        "requested": "[10.0.0, )",
+        "resolved": "10.0.0",
+        "contentHash": "j8zcwhS6bYB6FEfaY3nYSgHdpiL2T+/V3xjpHtslVAegyI1JUbB9yAt/BFdvZdsNbY0Udm4xFtvfT/hUwcOOOg==",
+        "dependencies": {
+          "Microsoft.Extensions.Configuration": "10.0.0",
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Configuration.Binder": "10.0.0",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Logging": "10.0.0",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Options": "10.0.0",
+          "Microsoft.Extensions.Options.ConfigurationExtensions": "10.0.0"
+        }
+      },
       "NLog": {
         "type": "Direct",
         "requested": "[6.2.2, )",
@@ -69,6 +85,15 @@
         "contentHash": "d2kDKnCsJvY7mBVhcjPSp9BkJk48DsaHPg5u+Oy4f8XaOqnEedRy/USyvnpHL92wpJ6DrTPy7htppUUzskbCXQ==",
         "dependencies": {
           "Microsoft.Extensions.Primitives": "10.0.0"
+        }
+      },
+      "Microsoft.Extensions.Configuration.Binder": {
+        "type": "Transitive",
+        "resolved": "10.0.0",
+        "contentHash": "tMF9wNh+hlyYDWB8mrFCQHQmWHlRosol1b/N2Jrefy1bFLnuTlgSYmPyHNmz8xVQgs7DpXytBRWxGhG+mSTp0g==",
+        "dependencies": {
+          "Microsoft.Extensions.Configuration": "10.0.0",
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.0"
         }
       },
       "Microsoft.Extensions.Configuration.FileExtensions": {
@@ -153,6 +178,18 @@
         "contentHash": "8oCAgXOow5XDrY9HaXX1QmH3ORsyZO/ANVHBlhLyCeWTH5Sg4UuqZeOTWJi6484M+LqSx0RqQXDJtdYy2BNiLQ==",
         "dependencies": {
           "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Primitives": "10.0.0"
+        }
+      },
+      "Microsoft.Extensions.Options.ConfigurationExtensions": {
+        "type": "Transitive",
+        "resolved": "10.0.0",
+        "contentHash": "tL9cSl3maS5FPzp/3MtlZI21ExWhni0nnUCF8HY4npTsINw45n9SNDbkKXBMtFyUFGSsQep25fHIDN4f/Vp3AQ==",
+        "dependencies": {
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Configuration.Binder": "10.0.0",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.0",
+          "Microsoft.Extensions.Options": "10.0.0",
           "Microsoft.Extensions.Primitives": "10.0.0"
         }
       },

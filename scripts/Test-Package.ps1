@@ -44,7 +44,7 @@ try {
         throw 'Package project/repository metadata does not identify the Clc.Logging Git repository.'
     }
     if ($metadata -match '<frameworkReference\b') { throw 'Clc.Logging must not declare a shared framework requirement.' }
-    foreach ($dependency in @('Clc.Configuration', 'Microsoft.Extensions.Hosting.Abstractions', 'Microsoft.Extensions.Logging', 'NLog', 'NLog.Extensions.Logging')) {
+    foreach ($dependency in @('Clc.Configuration', 'Microsoft.Extensions.Hosting.Abstractions', 'Microsoft.Extensions.Logging', 'Microsoft.Extensions.Logging.Configuration', 'NLog', 'NLog.Extensions.Logging')) {
         if (!$metadata.Contains("id=`"$dependency`"")) { throw "Missing dependency $dependency" }
     }
     if ($metadata -match '(?i)(?<![a-z])[a-z]:[\\/]|ProjectReference') { throw 'Machine-specific dependency metadata found.' }
@@ -145,14 +145,36 @@ try {
             dotnet $assembly $dataDirectory
         }
         if ($LASTEXITCODE -ne 0) { throw "$kind package consumer failed." }
-        $logs = @(Get-ChildItem -LiteralPath (Join-Path $dataDirectory 'Logs') -Filter '*.jsonl')
-        $records = @($logs | Get-Content | ForEach-Object { $_ | ConvertFrom-Json })
-        $expectedEventId = if ($kind -eq 'Worker') { 10 } else { 20 }
-        $events = @($records | Where-Object eventId -eq $expectedEventId)
-        if ($events.Count -ne 1) { throw "$kind expected one structured event, found $($events.Count)." }
-        if ($events[0].scope.CorrelationId -ne "$($kind.ToLowerInvariant())-smoke") { throw "$kind scope was not preserved." }
-        if ($kind -eq 'Worker' -and 'Worker disposed' -notin $records.message) { throw 'Worker disposal event was lost.' }
-        Write-Output "${kind}: verified package dependency, structured output and orderly shutdown."
+        $logs = @(Get-ChildItem -LiteralPath (Join-Path $dataDirectory 'Logs') -Filter '*.log')
+        $expectedFilename = "$kind-data-$(Get-Date -Format yyyy-MM-dd).log"
+        if ($logs.Count -ne 1 -or $logs[0].Name -cne $expectedFilename) { throw "$kind conventional log filename is incorrect." }
+        $lines = @($logs | Get-Content)
+        $expectedMessage = if ($kind -eq 'Worker') { 'Worker - Worker processed 3' } else { 'Web.Sample - Web served 1' }
+        $pattern = '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} [+-]\d{2}:\d{2} \[INFO\] ' + [regex]::Escape($expectedMessage) + '$'
+        $events = @($lines | Where-Object { $_ -cmatch $pattern })
+        if ($events.Count -ne 1) { throw "$kind expected one plaintext application event, found $($events.Count)." }
+        if (@($lines | Where-Object { $_ -match '^\{' }).Count -ne 0) { throw "$kind emitted JSON instead of plaintext." }
+        if (@($lines | Where-Object { $_ -match '\[INFO\] Microsoft.Hosting.Lifetime - Application started' }).Count -ne 1) {
+            throw "$kind Microsoft hosting integration event was lost."
+        }
+        if (@($lines | Where-Object { $_ -match 'Microsoft.Hosting.Lifetime - Application is shutting down' }).Count -ne 1) {
+            throw "$kind shutdown event was lost."
+        }
+        if ($kind -eq 'Worker') {
+            if (@($lines | Where-Object { $_ -match 'Worker - Worker disposed$' }).Count -ne 1) { throw 'Worker disposal event was lost.' }
+            $customDirectory = Join-Path $run 'Worker-custom-data'
+            & $baseHost $assembly $customDirectory --custom-layout
+            if ($LASTEXITCODE -ne 0) { throw 'Custom-layout Worker package consumer failed.' }
+            $customLogs = @(Get-ChildItem -LiteralPath (Join-Path $customDirectory 'Logs') -Filter '*.log')
+            $customLines = @($customLogs | Get-Content)
+            if ('Info | Worker | Worker processed 3 | 10 | worker-smoke' -cnotin $customLines) {
+                throw 'Package-backed native layout did not preserve formatting, structured properties and scopes.'
+            }
+            if (@($customLines | Where-Object { $_ -clike 'Info | Worker | Worker disposed |*' }).Count -ne 1) {
+                throw 'Custom-layout Worker disposal event was lost.'
+            }
+        }
+        Write-Output "${kind}: verified package dependency, plaintext output and orderly shutdown."
     }
 }
 finally {

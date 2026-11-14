@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using NLog.Extensions.Logging;
 
 namespace Clc.Logging.Tests;
 
@@ -26,7 +27,7 @@ public sealed class RegistrationTests
             logging = host.Services.GetRequiredService<ClcLogging>();
             Assert.AreEqual(Path.GetFileName(fixture.Paths.ApplicationDataDirectory), logging.ApplicationName);
             Assert.AreEqual(Path.Combine(fixture.Paths.ApplicationDataDirectory, "Logs"), logging.DirectoryPath);
-            Assert.AreEqual(1, host.Services.GetServices<ILoggerProvider>().Count());
+            Assert.AreEqual(1, host.Services.GetServices<ILoggerProvider>().OfType<NLogLoggerProvider>().Count());
             await host.StartAsync();
             host.Services.GetRequiredService<ILogger<RegistrationTests>>().LogInformation("configured event");
             await host.StopAsync();
@@ -160,7 +161,7 @@ public sealed class RegistrationTests
         using (var host = builder.Build())
         {
             first = callerOwned ? supplied : host.Services.GetRequiredService<ClcLogging>();
-            Assert.AreEqual(1, host.Services.GetServices<ILoggerProvider>().Count());
+            Assert.AreEqual(1, host.Services.GetServices<ILoggerProvider>().OfType<NLogLoggerProvider>().Count());
             host.Services.GetRequiredService<ILogger<RegistrationTests>>().LogInformation("original registration");
         }
         if (callerOwned)

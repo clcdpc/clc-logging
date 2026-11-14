@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 var builder = WebApplication.CreateBuilder();
 var paths = ConfigurationFixture.Paths(args.Single());
 ConfigurationFixture.Initialize(builder, paths);
+// Normal startup calls builder.AddClcConfiguration("clc-my-web") first.
+// Existing framework providers remain alongside NLog; plaintext goes to Logs/*.log.
 builder.AddClcLogging();
 builder.WebHost.UseUrls("http://127.0.0.1:0");
 await using (var app = builder.Build())
