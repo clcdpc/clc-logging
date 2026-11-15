@@ -35,17 +35,15 @@ public static class ClcLoggingBuilderExtensions
             throw new InvalidOperationException("Clc.Logging is already registered on this builder.");
         }
         var options = logging.Register(builder.Configuration);
-        // Standard hosts already bind logging configuration. Rebinding here would
-        // append its rules after application filters registered before this call.
-        if (!builder.Services.Any(service => service.ServiceType == typeof(IOptionsChangeTokenSource<LoggerFilterOptions>) &&
-            service.ImplementationInstance is ConfigurationChangeTokenSource<LoggerFilterOptions>))
+        // Always supply the native Logging binding, even when a host disables
+        // defaults or binds a different section. Put it before application filters;
+        // a standard host's existing binding keeps its original precedence.
+        var firstNewService = builder.Services.Count;
+        builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
+        var bindings = builder.Services.Skip(firstNewService)
+            .Where(service => service.ServiceType == typeof(IConfigureOptions<LoggerFilterOptions>)).ToArray();
+        foreach (var binding in bindings.Reverse())
         {
-            var firstNewService = builder.Services.Count;
-            builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
-            // A builder with defaults disabled still needs the native binding, at
-            // the same precedence as host defaults: before application filters.
-            var binding = builder.Services.Skip(firstNewService)
-                .Single(service => service.ServiceType == typeof(IConfigureOptions<LoggerFilterOptions>));
             builder.Services.Remove(binding);
             builder.Services.Insert(0, binding);
         }

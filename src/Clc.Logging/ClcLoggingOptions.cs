@@ -93,8 +93,7 @@ public sealed class ClcLoggingOptions
     {
         // Microsoft already defaults MinLevel to Information. Respect an application's
         // different minimum, and only fill category gaps left by its general rules.
-        if (filters.MinLevel != LogLevel.Information || filters.Rules.Any(rule =>
-            rule.ProviderName is null && rule.CategoryName?.Contains('*') == true)) { return; }
+        if (filters.MinLevel != LogLevel.Information) { return; }
         var applicationRules = filters.Rules.ToArray();
         foreach (var (category, level) in new[]
         {
@@ -104,13 +103,24 @@ public sealed class ClcLoggingOptions
         })
         {
             if (applicationRules.Any(rule => rule.ProviderName is null &&
-                (rule.CategoryName is null || category.StartsWith(rule.CategoryName, StringComparison.OrdinalIgnoreCase))))
+                MatchesCategory(rule.CategoryName, category)))
             {
                 continue;
             }
             // Provider-specific and more-specific application rules retain native precedence.
             filters.Rules.Insert(0, new LoggerFilterRule(null, category, level, null));
         }
+    }
+
+    private static bool MatchesCategory(string? pattern, string category)
+    {
+        if (pattern is null) { return true; }
+        var wildcard = pattern.IndexOf('*');
+        if (wildcard < 0) { return category.StartsWith(pattern, StringComparison.OrdinalIgnoreCase); }
+        // Only decide whether to fill this default's gap. Microsoft still selects
+        // the effective rule, including provider specificity and wildcard precedence.
+        return category.AsSpan().StartsWith(pattern.AsSpan(0, wildcard), StringComparison.OrdinalIgnoreCase) &&
+            category.AsSpan().EndsWith(pattern.AsSpan(wildcard + 1), StringComparison.OrdinalIgnoreCase);
     }
 
     private static void RequireObject(IConfigurationSection section)
