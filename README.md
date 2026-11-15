@@ -1,62 +1,153 @@
 # Clc.Logging
 
-Opinionated .NET 10 logging for CLC applications: ordinary `ILogger<T>`, NLog underneath, daily JSON Lines files, and stderr when files cannot be written. No `nlog.config` or new logger interface is required. Release package versions come from Git tags; local builds default to `0.0.0-local`.
+A lightweight .NET 10 setup library around NLog and Microsoft `ILogger<T>`. It removes repetitive path, file rotation, fallback and host integration code while leaving applications in control of layouts, targets, routing, providers and logging policy. There is no new logger interface, event model or configuration format. Release package versions come from Git tags; local builds default to `0.0.0-local`.
 
-## Web and worker setup
+## Standard application
 
-Reference `Clc.Logging` in the application. These examples compile with the .NET 10 Web SDK and .NET SDK respectively. Worker applications also reference `Microsoft.Extensions.Hosting` to construct their host.
-
-The published `Clc.Configuration 0.1.0-beta.5` dependency supplies the configured-paths helper and the worker-runtime correction. Worker consumers require only `Microsoft.NETCore.App`; package verification enforces this in PR, master and tagged builds.
+Reference `Clc.Logging`. Web applications can use their Web SDK host; workers also reference `Microsoft.Extensions.Hosting` to construct a host.
 
 ```csharp
 using Clc.Configuration;
 using Clc.Logging;
 
 var builder = WebApplication.CreateBuilder(args);
-
-builder.AddClcConfiguration("clc-ssrs-web");
+builder.AddClcConfiguration("clc-my-app");
 builder.AddClcLogging();
 
-var app = builder.Build();
+await using var app = builder.Build();
 await app.RunAsync();
 ```
 
-```csharp
-using Clc.Configuration;
-using Clc.Logging;
-using Microsoft.Extensions.Hosting;
+For a worker, use `Host.CreateApplicationBuilder(args)`, the same two configuration/logging calls, register hosted services, and run `using var host = builder.Build(); await host.RunAsync();`. Workers require only `Microsoft.NETCore.App`; Clc.Logging has no ASP.NET Core framework dependency.
 
-var builder = Host.CreateApplicationBuilder(args);
+Both use the same `IHostApplicationBuilder` extension. Register once before `Build()`. The host owns this logging instance and disposes it with the host. Applications continue using ordinary `ILogger<T>`, message templates, scopes and `EventId`.
 
-builder.AddClcConfiguration("clc-scheduler-worker");
-builder.AddClcLogging();
+Clc.Configuration owns the application identity and external application configuration. After `AddClcConfiguration` or `AddClcConfigurationWithBootstrap` succeeds, parameterless `AddClcLogging()` retrieves the existing `ClcApplicationPaths`. Supply the directory name only once. Registration before successful initialization throws without invoking the callback or changing services, providers or filters. Logging does not infer identity from assemblies, executables, environment variables, configuration filenames or working directories. No `appsettings.json`, `nlog.config` or environment variable is required.
 
-// Register application hosted services here.
-
-using var host = builder.Build();
-await host.RunAsync();
-```
-
-Both use the same `IHostApplicationBuilder` extension. The builder owns logging and disposes it with the host. Register once, before `Build()`. The package replaces the builder's existing providers and filter rules; add any extra `builder.Logging.AddFilter(...)` calls **after** `AddClcLogging`. Consumers keep using message templates, scopes and `EventId` normally.
-
-Clc.Configuration owns the selected application identity. After `AddClcConfiguration` or `AddClcConfigurationWithBootstrap` succeeds, Clc.Logging retrieves its previously resolved paths through `builder.GetClcApplicationPaths()`. Supply the directory name only once in normal startup. Calling `AddClcLogging()` before successful configuration initialization throws with the required startup order, without changing logging providers or filters. Logging does not infer a name from the assembly, executable, environment or configuration file.
-
-The explicit-name overload remains available for applications that use logging without Clc.Configuration initialization: `builder.AddClcLogging("my-web")`. The explicit-paths overload supports independently resolved paths:
+Explicit registration remains available without Clc.Configuration initialization:
 
 ```csharp
-using Clc.Configuration;
-using Clc.Logging;
-
-var paths = ClcApplicationPaths.Resolve("my-web");
-var builder = WebApplication.CreateBuilder(args);
+builder.AddClcLogging("clc-my-app");
+// Or, with previously resolved ClcApplicationPaths:
 builder.AddClcLogging(paths);
 ```
 
-The directory's name is the single application identity. Files go to `<ApplicationDataDirectory>/Logs/<name>-yyyy-MM-dd.jsonl`. Size rollover adds a sequence suffix, for example `<name>-yyyy-MM-dd.001.jsonl`. Paths are resolved without writing to ProgramData during bootstrap. `ClcLogging.CreateForDirectory(absoluteApplicationDataDirectory)` also supports an already resolved application data directory or an isolated local fixture; its last path segment supplies the identity. It still appends `Logs`.
+## Plaintext and files
 
-## Early startup and fatal failures
+The default uses NLog's built-in `SimpleLayout`:
 
-Use a caller-owned instance to cover configuration and host construction failures, before configured paths are available on a builder. This separate startup pattern still needs an explicit identity. It writes bootstrap events to stderr until registration reads the application's logging settings. Bootstrap events are not replayed into the file. The same instance stays alive after the host is disposed so the outer catch can report a fatal failure:
+```text
+2026-11-14 17:15:32.481 -05:00 [INFO] MyApp.Services.CatalogService - Catalog refreshed successfully.
+```
+
+Entries include local time with milliseconds and UTC offset, uppercase NLog level, logger/category and rendered message. Exceptions use NLog's native rendering, including inner exceptions and stack traces; they may span multiple lines. Structured properties, scopes, event IDs and other metadata remain available to native custom layouts without being forced into ordinary plaintext. There is no package-specific JSON logging or serializer. Applications wanting JSON can supply a native NLog JSON layout.
+
+Files are UTF-8 without a BOM, appended across restarts:
+
+```text
+<ApplicationDataDirectory>/Logs/<application-name>-yyyy-MM-dd.log
+C:\ProgramData\clc-my-app\Logs\clc-my-app-2026-11-14.log
+```
+
+The last application-directory segment supplies the identity. Size rollover adds a sequence suffix such as `clc-my-app-2026-11-14.001.log`. Existing directory and filename text is literal, including `${...}`. `ClcLogging.CreateForDirectory(absoluteApplicationDataDirectory)` supports an already resolved directory and appends `Logs`.
+
+Daily and size rollover, retention and archive limits use NLog's file target. Cleanup occurs on writes, with no background retention job. An individual event may exceed the size limit, and the active file may temporarily exist in addition to the archive cap. Unrelated application filenames are retained.
+
+The package creates `Logs` using existing process permissions. It does not elevate, change ACLs or provision IIS/service identities. Successful conventional writes go to the file. If writing fails, NLog's `FallbackGroupTarget` sends the event to a native stderr `ConsoleTarget`, then retries the file on subsequent writes. Disabled file output goes directly to stderr. File and stderr share the effective layout. Retain stderr in the hosting environment if it should serve as a fallback record; failure of both destinations cannot guarantee persistence.
+
+## Native customization
+
+Set `Layout` to any native NLog layout. Null selects the default plaintext layout. The supplied instance is used directly, with normal NLog initialization and disposal, without wrapping, serialization or text transformation:
+
+```csharp
+using NLog.Layouts;
+
+builder.AddClcConfiguration("clc-my-app");
+builder.AddClcLogging(options =>
+{
+    options.Layout = new SimpleLayout("${level} | ${logger} | ${message}");
+});
+```
+
+An application's existing `Layout` subclass, including an application-owned sanitizing layout, can be assigned the same way.
+
+`ConfigureNLog` receives the actual instance-local `LoggingConfiguration` after conventional targets and rules are assembled and before activation. It runs once during configured-host registration, never during bootstrap. Use native NLog APIs to add, remove or replace targets, change layouts and modify routing or rules:
+
+```csharp
+using NLog.Targets;
+
+builder.AddClcLogging(options =>
+{
+    options.ConfigureNLog = configuration =>
+    {
+        var file = configuration.FindTargetByName<FileTarget>("file");
+        if (file is not null)
+        {
+            file.KeepFileOpen = false;
+        }
+        var console = new ConsoleTarget("application-console")
+        {
+            Layout = "${level} | ${logger} | ${message}",
+            StdErr = true
+        };
+        configuration.AddRule(NLog.LogLevel.Error, NLog.LogLevel.Fatal, console);
+    };
+});
+```
+
+Conventional named targets are `file`, `stderr` and, when files are enabled, `file-with-stderr-fallback`. The default rule accepts Trace through Fatal, with normal `ILogger` filtering applied first. Native rules may further restrict or reroute those events. Removing a target's name alone does not remove references from native wrapper/rule collections; update those references too. To use only custom targets, clear conventional rules and add your own. `File.Enabled = false` does not prevent custom targets from working. Changes stay in this instance's `LogFactory`; the package never sets process-global `LogManager.Configuration`.
+
+## Providers and filters
+
+Registration adds one package-owned NLog provider alongside existing providers. It rejects duplicate Clc.Logging registration on the same builder. Retained providers with overlapping routing can deliver events to multiple destinations. Applications wanting only NLog can explicitly clear providers before registration:
+
+```csharp
+builder.Logging.ClearProviders();
+builder.AddClcLogging();
+```
+
+The provider collection remains under application control after registration as well.
+
+Standard Microsoft `Logging:LogLevel` configuration, provider-specific configuration and `AddFilter` rules remain effective. Existing rules are retained and rules added later work normally. Microsoft's provider specificity, longest category match and last equal-specificity rule determine the result. `None` disables matching categories. Configuration filters use Microsoft's normal reload behavior when the configuration provider supports it; conventional file options are read once at registration.
+
+Without conflicting application policy, defaults are Information generally, Warning for `Microsoft`, Information for `Microsoft.Hosting.Lifetime`, and Warning for `System.Net.Http`. Category defaults fill gaps: explicit general `Default` or broader category rules take precedence, including over more-specific conventional defaults. Provider-specific rules keep native precedence. An application minimum other than Information is left alone and disables category-default insertion. General wildcard category rules also disable category-default insertion, leaving wildcard matching entirely to Microsoft. No provider-specific package defaults or forced minimum/maximum are installed.
+
+`options.LogLevels` contains configured general levels. Callback additions or changed values append native Microsoft filter rules at registration; unchanged entries remain managed by Microsoft's configuration provider. Use `builder.Logging.AddFilter(...)` for advanced policy and provider filters. Clearing the convenience dictionary does not remove application configuration rules.
+
+```csharp
+builder.AddClcLogging(options =>
+{
+    options.LogLevels["MyApp.Diagnostics"] = LogLevel.Debug;
+});
+builder.Logging.AddFilter("MyApp.Diagnostics.Quiet", LogLevel.None);
+```
+
+## File settings
+
+Optional settings belong in the existing external application configuration:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "MyApp.Diagnostics": "Debug"
+    },
+    "File": {
+      "Enabled": true,
+      "MaxFileSizeBytes": 52428800,
+      "RetentionDays": 30,
+      "MaxArchiveFiles": 300
+    }
+  }
+}
+```
+
+The displayed file settings are the defaults. `Enabled` accepts a Boolean; file size is an integer from 1 KiB through 1 GiB, retention 1–3650 days, archive cap 1–10000 files. Unknown file settings and malformed values fail registration with the setting's name. General log levels must be named Microsoft levels, including `None`. The options callback runs after settings are read and validated; its resulting values are validated again. It can also change `FlushTimeout` from its five-second default to a value greater than zero and at most one minute.
+
+## Early startup and lifetime
+
+Use a caller-owned instance before host construction and configuration loading. Bootstrap uses stderr without creating application directories or replaying events into the configured file. Dispose the host first; the instance remains available for an outer fatal handler until its owner disposes it:
 
 ```csharp
 using Clc.Configuration;
@@ -64,7 +155,7 @@ using Clc.Logging;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-const string applicationDirectoryName = "clc-scheduler-worker";
+const string applicationDirectoryName = "clc-my-app";
 ClcLogging? logging = null;
 try
 {
@@ -86,59 +177,21 @@ catch (Exception error)
 finally { logging?.Dispose(); }
 ```
 
-For a web app, use `WebApplication.CreateBuilder(args)`, the same registration, `await using var app = builder.Build()`, and `await app.RunAsync()` inside the try. Do not also log/rethrow the exception in an inner catch. `LogFatal` reports an exception once: if this instance already rendered that same exception object (for example, the host logged a failed hosted-service startup), it keeps the original diagnostic. A previously unreported fatal error bypasses category filters. A failure before instance creation uses the static stderr helper. These helpers include exception text; application privacy rules still apply.
+Caller-owned `Create`, `Create(paths)` and `CreateForDirectory` apply the options callback immediately to bootstrap defaults, then reapply it to fresh configuration-derived options during registration. This callback can execute twice and must not rely on one-time side effects. Assign an application-owned layout in that callback to preserve it in both phases, for example `ClcLogging.Create("clc-my-app", options => options.Layout = applicationSafeLayout)`.
 
-Dispose the host before the caller-owned logging instance. Logging remains available through hosted-service stop and disposal. Each instance owns its NLog factory; it never sets process-global NLog configuration or calls global shutdown. `Flush()` and `Dispose()` are idempotent. Writes are synchronous with file auto-flush; there is no queue to lose on shutdown or overload. This trades some logging throughput for simpler lifecycle behavior. Explicit final flush defaults to five seconds; it cannot bound an operating system file write that is already blocked.
+Bootstrap never invokes `ConfigureNLog`. Host-owned registration executes its options callback only once, after configuration loading. Parameterless registration before Clc.Configuration initialization does not invoke it.
 
-## Defaults and settings
+Each instance owns its NLog factory and never shuts down process-global NLog. Logging remains available through hosted-service stop and disposal. `Flush()` and `Dispose()` are safe to repeat. Writes are synchronous with file auto-flush; there is no package queue. A flush timeout cannot bound an operating system write already blocked.
 
-Settings are a startup snapshot. Configuration changes require a restart. The optional callback runs during registration, after configuration is read:
+`LogFatal()` bypasses Microsoft host/category filters and uses current NLog layouts and routing. Repeated calls with the same exception object are suppressed by that instance. It does not deduplicate exceptions previously logged through `ILogger`, arbitrary layouts or other providers. No automatic unhandled-exception logging is installed.
 
-```csharp
-builder.AddClcLogging(options =>
-{
-    options.LogLevels["MyWeb.Diagnostics"] = LogLevel.Debug;
-    options.FlushTimeout = TimeSpan.FromSeconds(5);
-});
-```
+## Application policy and beta API changes
 
-```json
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "Microsoft": "Warning",
-      "Microsoft.Hosting.Lifetime": "Information",
-      "System.Net.Http": "Warning",
-      "MyWeb.Diagnostics": "Debug"
-    },
-    "File": {
-      "Enabled": true,
-      "MaxFileSizeBytes": 52428800,
-      "RetentionDays": 30,
-      "MaxArchiveFiles": 300
-    }
-  }
-}
-```
+Applications own redaction, sanitization, credential handling and decisions about what may enter logs. Clc.Logging contains no redaction policy, secret-key list, request inspection or authentication-specific logic. Supply a native layout when output-boundary sanitization is required, including during caller-owned bootstrap. Other retained providers have their own output policies.
 
-Omitted settings use these defaults. The longest matching category prefix wins, case-insensitively, following Microsoft's category matching. `Default` is the fallback; specific built-in categories remain in effect when only `Default` is changed. All seven Microsoft levels, including `None`, are supported. Explicit framework Debug/Trace settings work because NLog accepts all levels and Microsoft applies the single filter policy. Additional `AddFilter` rules follow Microsoft's normal longest-prefix and last-rule precedence.
+`WriteStartupFailure()` is an explicitly invoked, caller-controlled last resort when instance creation fails. It writes raw exception text directly to stderr, has no custom layout and is unsuitable for arbitrary sensitive exceptions without caller preparation.
 
-Invalid values fail registration with the setting's name. File size must be an integer from 1 KiB through 1 GiB, retention 1–3650 days, archive cap 1–10000 files, and the callback's flush timeout greater than zero and at most one minute. Unknown file settings, numeric/unknown level names, nested scalar values and wildcard categories are rejected. NLog performs daily/size rollover and archive cleanup when writing; there is no background retention job. An individual event can exceed the size limit, and rollover/cleanup can temporarily leave the active file in addition to the archive cap. Existing current files are appended, and unrelated application filenames are retained.
-
-## Output and permissions
-
-File output is UTF-8 without a BOM, one JSON object per line. The stable fields are `timestamp`, `level`, `category`, `eventId`, `eventName`, `message`, `template`, `properties`, `scope`, `scopes`, `traceId`, `spanId` and `exception`. Absent event names, tracing and exceptions are null; the default event ID is zero. `properties` and `scope` hold separate objects, so application keys cannot overwrite core fields. Non-property scope states are in `scopes`. Activity trace/span IDs are captured when present; caller-supplied IDs remain in scope/event properties. Timestamps use local time with an explicit offset calculated for each event, including daylight-saving transitions. Level names are NLog's `Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`.
-
-The package creates `Logs` using the process's existing permissions. It does not elevate, change ACLs or provision service/IIS identities. A successful file write produces only file output. A failed file write uses NLog's fallback group to write an actionable diagnostic and the event to stderr; it retries the file on later writes. Disabled file output writes events directly to stderr. Configure the hosting environment to retain stderr if that is the desired fallback record. Failure of both the filesystem and process output cannot guarantee persistence. Invalid settings still fail startup clearly.
-
-## Application policy
-
-The package does not automatically inspect HTTP requests, headers, cookies, query strings, bodies, configuration or application object properties. Structured scalar values retain their types; other explicitly supplied values use their invariant string representation. Message and exception text can contain secrets. This formatter does not guarantee redaction.
-
-During registration, applications can set `options.IncludeProperty = name => ...` to allowlist structured event/scope property names, and `options.TransformText = text => ...` to transform string values, messages, templates, categories, event names, scope states and exception text before JSON encoding. Property filtering does **not** remove a value already included in the formatted message. Bootstrap uses defaults until registration; keep its messages minimal. A failing formatter/callback produces a JSON diagnostic with a `formattingError` type instead of silently dropping the event. These hooks are narrow application policy, not a general redaction framework.
-
-Migration must preserve each application's existing allowlists, sanitization and authentication/protocol filters. Polaris's OpenIddict suppression and ASAP's specific OIDC-event filter are intentionally absent from shared defaults. There are no request logging middleware, remote sinks or telemetry integrations.
+Intentional earlier-beta changes: `ClcJsonLayout`, `ProcessOutputTarget`, `IncludeProperty` and `TransformText` are removed; conventional files use `.log`; providers and application filters are preserved; caller-owned callbacks run during bootstrap and registration; fatal deduplication covers repeated `LogFatal` calls only. Consumers such as `ssrs-web` can retain their own layout, but must review early messages, other providers and explicit raw startup-failure output under their own policy.
 
 ## Local verification
 
@@ -151,9 +204,11 @@ dotnet pack src/Clc.Logging/Clc.Logging.csproj -c Release --no-build --no-restor
 ./scripts/Test-ReleaseVersions.ps1
 ```
 
-The MSTest suite uses isolated temporary directories. `Test-Package.ps1` inspects package contents/metadata, restores both sample consumers into fresh projects with an isolated package cache, runs a real worker and loopback HTTP request through `AddClcLogging()`, and checks their JSON events and shutdown output. These sample projects have package references, never project references. All dependencies except the local `Clc.Logging` artifact come from NuGet.org. The shared test-only `samples/ConfigurationFixture.cs` invokes the published Configuration assembly's existing internal initialization seams with temporary paths, then exercises public path retrieval and logging registration. It avoids writes to production ProgramData and adds no upstream API. Samples are outside the main solution so a clean library build does not depend on an already packed artifact. No consuming application or service is modified.
+MSTest uses isolated temporary directories. `Test-Package.ps1` checks package contents, identity, repository/assembly metadata and hashes, restores fresh Worker and Web consumers from the artifact with an isolated package cache, and verifies plaintext and shutdown events. Worker also exercises a custom native layout, scopes/event properties and a target added through `ConfigureNLog`. Samples use package references, never project references; other dependencies come from NuGet.org.
 
-The script evaluates the local `PackageVersion` unless supplied with `-PackageVersion <version>`. It checks package identity, project/repository metadata, assembly metadata, restored assembly hash, runtimeconfig and dependency graph. It copies only the installed .NET 10 base runtime and native host to an isolated dotnet root, verifies its runtime inventory and requires the worker to execute successfully there. An ASP.NET framework dependency in the worker runtime configuration or restored graph fails verification. `Test-ReleaseVersions.ps1` requires prerelease packing and consumption to succeed and verifies that stable packing rejects the prerelease Configuration dependency with `NU5104`. The published prerelease Configuration dependency supports a Logging prerelease; stable Logging packaging requires a suitable stable dependency.
+The shared test-only `samples/ConfigurationFixture.cs` invokes the published Configuration assembly's existing internal initialization seams with temporary paths, then exercises public path retrieval and configuration-first logging registration. It avoids production ProgramData writes and adds no upstream API. Samples stay outside the main solution so clean builds do not depend on a previously packed artifact.
+
+Package verification copies only the installed .NET 10 base runtime and native host into an isolated root, checks its runtime inventory, and runs both default and custom-layout Workers there. An ASP.NET framework dependency in the Worker runtime configuration or restored graph fails verification. `Test-ReleaseVersions.ps1` requires prerelease packing and consumption and verifies stable packing rejects the prerelease Configuration dependency with `NU5104`. Stable Logging packaging requires a suitable stable Configuration dependency. The package script evaluates local `PackageVersion` unless supplied `-PackageVersion <version>`.
 
 ## Release workflow
 

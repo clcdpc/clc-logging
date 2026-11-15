@@ -16,11 +16,11 @@ public sealed class RotationAndLifetimeTests
         using var host = fixture.Build(new() { ["Logging:File:MaxFileSizeBytes"] = "1024", ["Logging:File:MaxArchiveFiles"] = "3" });
         var logger = host.Services.GetRequiredService<ILogger<RotationAndLifetimeTests>>();
         for (var i = 0; i < 30; i++) { logger.LogInformation("Event {Index} {Payload}", i, new string('x', 600)); }
-        var files = Directory.GetFiles(fixture.Logging.DirectoryPath, "*.jsonl");
+        var files = Directory.GetFiles(fixture.Logging.DirectoryPath, "*.log");
         Assert.IsTrue(files.Length is >= 2 and <= 4, $"Expected capped rollover files, found {files.Length}.");
-        var records = fixture.Records();
+        var records = fixture.Messages();
         Assert.IsTrue(records.Length < 30);
-        Assert.IsTrue(records.Any(record => record.GetProperty("properties").GetProperty("Index").GetInt32() == 29));
+        Assert.IsTrue(records.Any(record => record.StartsWith("Event 29 ", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -30,8 +30,10 @@ public sealed class RotationAndLifetimeTests
         using var host = fixture.Build(new() { ["Logging:File:MaxFileSizeBytes"] = "1024" });
         var logger = host.Services.GetRequiredService<ILogger<RotationAndLifetimeTests>>();
         for (var i = 0; i < 12; i++) { logger.LogInformation("Event {Index} {Payload}", i, new string('x', 700)); }
-        Assert.IsTrue(Directory.GetFiles(fixture.Logging.DirectoryPath, "*.jsonl").Length > 1);
-        CollectionAssert.AreEquivalent(Enumerable.Range(0, 12).ToArray(), fixture.Records().Select(record => record.GetProperty("properties").GetProperty("Index").GetInt32()).ToArray());
+        var files = Directory.GetFiles(fixture.Logging.DirectoryPath, "*.log");
+        Assert.IsTrue(files.Length > 1);
+        Assert.IsTrue(files.Any(path => System.Text.RegularExpressions.Regex.IsMatch(path, @"\.\d{3}\.log$")));
+        CollectionAssert.AreEquivalent(Enumerable.Range(0, 12).ToArray(), fixture.Messages().Select(record => int.Parse(record.Split(' ')[1], System.Globalization.CultureInfo.InvariantCulture)).ToArray());
     }
 
     [TestMethod]
@@ -39,15 +41,15 @@ public sealed class RotationAndLifetimeTests
     {
         using var fixture = new LoggingFixture();
         Directory.CreateDirectory(fixture.Logging.DirectoryPath);
-        var old = Path.Combine(fixture.Logging.DirectoryPath, $"test-app-{DateTime.Today.AddDays(-40):yyyy-MM-dd}.001.jsonl");
+        var old = Path.Combine(fixture.Logging.DirectoryPath, $"test-app-{DateTime.Today.AddDays(-40):yyyy-MM-dd}.001.log");
         File.WriteAllText(old, "old archive");
         File.SetCreationTimeUtc(old, DateTime.UtcNow.AddDays(-40));
         File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-40));
-        var oldDaily = Path.Combine(fixture.Logging.DirectoryPath, $"test-app-{DateTime.Today.AddDays(-41):yyyy-MM-dd}.jsonl");
+        var oldDaily = Path.Combine(fixture.Logging.DirectoryPath, $"test-app-{DateTime.Today.AddDays(-41):yyyy-MM-dd}.log");
         File.WriteAllText(oldDaily, "old daily file");
         File.SetCreationTimeUtc(oldDaily, DateTime.UtcNow.AddDays(-41));
         File.SetLastWriteTimeUtc(oldDaily, DateTime.UtcNow.AddDays(-41));
-        var unrelated = Path.Combine(fixture.Logging.DirectoryPath, "other-app-2000-01-01.jsonl");
+        var unrelated = Path.Combine(fixture.Logging.DirectoryPath, "other-app-2000-01-01.log");
         File.WriteAllText(unrelated, "unrelated");
         File.SetLastWriteTimeUtc(unrelated, DateTime.UtcNow.AddDays(-40));
         using var host = fixture.Build();
@@ -73,6 +75,8 @@ public sealed class RotationAndLifetimeTests
         fixture.Logging.Logger.LogInformation("after host disposal");
         fixture.Logging.Dispose();
         fixture.Logging.Dispose();
+        fixture.Logging.Flush();
+        fixture.Logging.Flush();
         var text = File.ReadAllText(fixture.TodayFile);
         StringAssert.Contains(text, "service start");
         StringAssert.Contains(text, "service stop");
@@ -98,6 +102,41 @@ public sealed class RotationAndLifetimeTests
     }
 
     [TestMethod]
+    public async Task ConcurrentHostsWriteOnlyToTheirOwnFactories()
+    {
+        using var first = new LoggingFixture();
+        using var second = new LoggingFixture();
+        await Task.WhenAll(WriteEvents(first, "first"), WriteEvents(second, "second"));
+        CollectionAssert.AreEquivalent(Enumerable.Range(0, 100).Select(i => $"first {i}").ToArray(), first.Messages());
+        CollectionAssert.AreEquivalent(Enumerable.Range(0, 100).Select(i => $"second {i}").ToArray(), second.Messages());
+
+        static Task WriteEvents(LoggingFixture fixture, string name) => Task.Run(() =>
+        {
+            using var host = fixture.Build();
+            var logger = host.Services.GetRequiredService<ILogger<RotationAndLifetimeTests>>();
+            for (var i = 0; i < 100; i++) { logger.LogInformation("{Name} {Index}", name, i); }
+        });
+    }
+
+    [TestMethod]
+    public void FatalLoggingUsesCustomLayoutDespiteDisabledMicrosoftFiltersAndSuppressesRepeatedCalls()
+    {
+        using var fixture = new LoggingFixture(options => options.Layout = new NLog.Layouts.SimpleLayout("${level}|${message}|${exception:format=message}"));
+        using var host = fixture.Build(new() { ["Logging:LogLevel:Default"] = "None" });
+        host.Services.GetRequiredService<ILogger<RotationAndLifetimeTests>>().LogCritical("hidden");
+        var error = new InvalidOperationException("fatal detail");
+        Parallel.For(0, 10, _ => fixture.Logging.LogFatal(error));
+        fixture.Logging.LogFatal(new InvalidOperationException("another detail"));
+        fixture.Logging.Flush();
+        fixture.Logging.Flush();
+        CollectionAssert.AreEqual(new[]
+        {
+            "Fatal|Application startup or execution failed.|fatal detail",
+            "Fatal|Application startup or execution failed.|another detail"
+        }, fixture.Lines());
+    }
+
+    [TestMethod]
     public void BuilderOwnedInstanceIsDisposedWithItsHostAndFiltersCanBeAddedAfterSetup()
     {
         using var capture = new ErrorCapture();
@@ -117,7 +156,7 @@ public sealed class RotationAndLifetimeTests
     }
 
     [TestMethod]
-    public async Task FatalHandlerDoesNotRepeatAnExceptionAlreadyReportedByTheHost()
+    public async Task FatalHandlerSuppressesOnlyRepeatedFatalCallsOnTheSameException()
     {
         using var fixture = new LoggingFixture();
         var builder = fixture.Builder();
@@ -127,13 +166,15 @@ public sealed class RotationAndLifetimeTests
         var error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => host.StartAsync());
         fixture.Logging.LogFatal(error);
         fixture.Logging.LogFatal(error);
-        var records = fixture.Records().Where(record => record.GetProperty("exception").ValueKind != System.Text.Json.JsonValueKind.Null).ToArray();
-        Assert.AreEqual(1, records.Length);
-        StringAssert.Contains(records[0].GetProperty("exception").GetString(), "synthetic startup failure");
+        var text = fixture.Text();
+        Assert.AreEqual(1, fixture.Lines().Count(line => line.Contains("[FATAL]", StringComparison.Ordinal)));
+        // The host's earlier error remains an independent event.
+        Assert.AreEqual(2, fixture.Lines().Count(line => line.Contains("System.InvalidOperationException: synthetic startup failure", StringComparison.Ordinal)));
+        StringAssert.Contains(text, "synthetic startup failure");
     }
 
     [TestMethod]
-    public void ExistingDirectoryNamesAreLiteralAndConfigurationIsAStartupSnapshot()
+    public void ExistingDirectoryNamesAreLiteralAndNativeFiltersCanReload()
     {
         var root = Path.Combine(Path.GetTempPath(), "Clc.Logging.Tests", Guid.NewGuid().ToString("N"));
         var application = Path.Combine(root, "literal-${level}");
@@ -146,12 +187,16 @@ public sealed class RotationAndLifetimeTests
             using var host = builder.Build();
             builder.Configuration["Logging:LogLevel:App"] = "None";
             ((IConfigurationRoot)builder.Configuration).Reload();
-            host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("App").LogDebug("still enabled");
+            host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("App").LogDebug("hidden");
+            builder.Configuration["Logging:LogLevel:App"] = "Debug";
+            ((IConfigurationRoot)builder.Configuration).Reload();
+            host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("App").LogDebug("enabled again");
             host.Dispose();
             logging.Dispose();
             var path = Directory.GetFiles(Path.Combine(application, "Logs")).Single();
             StringAssert.StartsWith(Path.GetFileName(path), "literal-${level}-");
-            StringAssert.Contains(File.ReadAllText(path), "still enabled");
+            StringAssert.Contains(File.ReadAllText(path), "enabled again");
+            Assert.IsFalse(File.ReadAllText(path).Contains("hidden", StringComparison.Ordinal));
         }
         finally { if (Directory.Exists(root)) { Directory.Delete(root, true); } }
     }

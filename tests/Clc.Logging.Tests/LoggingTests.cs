@@ -1,6 +1,5 @@
-using System.Diagnostics;
 using System.Globalization;
-using System.Text.Json;
+using System.Text.RegularExpressions;
 using Clc.Configuration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,51 +34,67 @@ public sealed class LoggingTests
         var path = fixture.TodayFile;
         Assert.IsFalse(Directory.Exists(fixture.Logging.DirectoryPath));
         Directory.CreateDirectory(fixture.Logging.DirectoryPath);
-        File.WriteAllText(path, "{\"existing\":true}\n");
+        File.WriteAllText(path, "existing content\n");
         using (var host = fixture.Build())
         {
             host.Services.GetRequiredService<ILogger<LoggingTests>>().LogInformation("created {Value}", 123);
         }
         fixture.Logging.Dispose();
+        using (var restarted = ClcLogging.CreateForDirectory(Path.GetDirectoryName(fixture.Logging.DirectoryPath)!))
+        {
+            var builder = fixture.Builder();
+            builder.AddClcLogging(restarted);
+            using var host = builder.Build();
+            host.Services.GetRequiredService<ILogger<LoggingTests>>().LogInformation("after restart");
+        }
         var lines = File.ReadAllLines(path);
-        Assert.AreEqual(2, lines.Length);
-        Assert.IsTrue(JsonDocument.Parse(lines[0]).RootElement.GetProperty("existing").GetBoolean());
-        Assert.AreEqual("created 123", JsonDocument.Parse(lines[1]).RootElement.GetProperty("message").GetString());
+        Assert.AreEqual(3, lines.Length);
+        Assert.AreEqual("existing content", lines[0]);
+        StringAssert.EndsWith(lines[1], "[INFO] Clc.Logging.Tests.LoggingTests - created 123");
+        StringAssert.EndsWith(lines[2], "[INFO] Clc.Logging.Tests.LoggingTests - after restart");
         CollectionAssert.AreNotEqual(new byte[] { 0xEF, 0xBB, 0xBF }, File.ReadAllBytes(path).Take(3).ToArray());
     }
 
     [TestMethod]
-    public void PreservesStructuredEventScopesTraceExceptionAndCoreFieldNames()
+    public void PlaintextIncludesLocalTimestampLevelCategoryAndRenderedMessageOnly()
     {
         using var fixture = new LoggingFixture();
         using (var host = fixture.Build())
         {
             var logger = host.Services.GetRequiredService<ILogger<LoggingTests>>();
-            using var activity = new Activity("test").SetIdFormat(ActivityIdFormat.W3C).Start();
-            using var scope = logger.BeginScope(new Dictionary<string, object?> { ["CorrelationId"] = "correlation-42", ["message"] = "scope-message", ["traceId"] = "supplied-trace" });
-            using var state = logger.BeginScope("operation-scope");
-            logger.LogError(new EventId(42, "LookupFailed"), new InvalidOperationException("failure text"), "Lookup {Count} for {message}", 3, "event-message\nnext line café");
-            var record = fixture.Records().Single();
-            Assert.AreEqual(42, record.GetProperty("eventId").GetInt32());
-            Assert.AreEqual("LookupFailed", record.GetProperty("eventName").GetString());
-            Assert.AreEqual(typeof(LoggingTests).FullName, record.GetProperty("category").GetString());
-            Assert.AreEqual("Lookup {Count} for {message}", record.GetProperty("template").GetString());
-            Assert.AreEqual("Lookup 3 for event-message\nnext line café", record.GetProperty("message").GetString());
-            Assert.AreEqual(3, record.GetProperty("properties").GetProperty("Count").GetInt32());
-            Assert.AreEqual("correlation-42", record.GetProperty("scope").GetProperty("CorrelationId").GetString());
-            Assert.AreEqual("supplied-trace", record.GetProperty("scope").GetProperty("traceId").GetString());
-            Assert.IsTrue(record.GetProperty("scopes").EnumerateArray().Any(s => s.GetString() == "operation-scope"));
-            Assert.AreEqual(activity.TraceId.ToString(), record.GetProperty("traceId").GetString());
-            Assert.AreEqual(activity.SpanId.ToString(), record.GetProperty("spanId").GetString());
-            StringAssert.Contains(record.GetProperty("exception").GetString(), "InvalidOperationException: failure text");
-            var timestamp = record.GetProperty("timestamp").GetString()!;
-            var parsed = DateTimeOffset.ParseExact(timestamp, "O", CultureInfo.InvariantCulture);
+            using var scope = logger.BeginScope(new Dictionary<string, object?> { ["ScopeOnly"] = "hidden metadata" });
+            logger.LogInformation(new EventId(42, "LookupCompleted"), "Lookup {Count} café", 3);
+            var line = fixture.Lines().Single();
+            StringAssert.Matches(line, new Regex(@"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} [+-]\d{2}:\d{2} \[INFO\] Clc.Logging.Tests.LoggingTests - Lookup 3 café$"));
+            var parsed = DateTimeOffset.ParseExact(line[..30], "yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture);
             Assert.AreEqual(TimeZoneInfo.Local.GetUtcOffset(parsed), parsed.Offset);
-            Assert.IsTrue(timestamp.EndsWith(parsed.ToString("zzz", CultureInfo.InvariantCulture), StringComparison.Ordinal));
+            Assert.IsTrue((DateTimeOffset.Now - parsed).Duration() < TimeSpan.FromSeconds(10));
+            Assert.IsFalse(line.Contains("ScopeOnly", StringComparison.Ordinal));
+            Assert.IsFalse(line.Contains("LookupCompleted", StringComparison.Ordinal));
+            Assert.IsFalse(line.StartsWith('{'));
         }
         fixture.Logging.Dispose();
         Assert.AreEqual(1, File.ReadAllLines(fixture.TodayFile).Length);
     }
+
+    [TestMethod]
+    public void ExceptionsUseNativeDetailsAndStackTrace()
+    {
+        using var fixture = new LoggingFixture();
+        using var host = fixture.Build();
+        try { ThrowDiagnosticException(); }
+        catch (InvalidOperationException exception)
+        {
+            host.Services.GetRequiredService<ILogger<LoggingTests>>().LogError(exception, "Lookup failed");
+        }
+        var text = fixture.Text();
+        StringAssert.Contains(text, "[ERROR] Clc.Logging.Tests.LoggingTests - Lookup failed");
+        StringAssert.Contains(text, "System.InvalidOperationException: failure text");
+        StringAssert.Contains(text, "System.ArgumentException: inner detail");
+        StringAssert.Contains(text, nameof(ThrowDiagnosticException));
+    }
+
+    private static void ThrowDiagnosticException() => throw new InvalidOperationException("failure text", new ArgumentException("inner detail"));
 
     [TestMethod]
     public void FrameworkDefaultsAndLongestCategoryPrefixesDoNotDuplicateEventsOrSuppressDebugOverrides()
@@ -123,7 +138,7 @@ public sealed class LoggingTests
         }
         Assert.IsFalse(Directory.Exists(fixture.Logging.DirectoryPath));
         var output = capture.Lines().Single();
-        Assert.AreEqual("process-only", JsonDocument.Parse(output).RootElement.GetProperty("message").GetString());
+        StringAssert.EndsWith(output, "[INFO] Clc.Logging.Tests.LoggingTests - process-only");
     }
 }
 
@@ -131,7 +146,7 @@ internal sealed class LoggingFixture : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "Clc.Logging.Tests", Guid.NewGuid().ToString("N"));
     public ClcLogging Logging { get; }
-    public string TodayFile => Path.Combine(Logging.DirectoryPath, $"{Logging.ApplicationName}-{DateTime.Now:yyyy-MM-dd}.jsonl");
+    public string TodayFile => Path.Combine(Logging.DirectoryPath, $"{Logging.ApplicationName}-{DateTime.Now:yyyy-MM-dd}.log");
 
     public LoggingFixture(Action<ClcLoggingOptions>? configure = null)
     {
@@ -152,11 +167,10 @@ internal sealed class LoggingFixture : IDisposable
         return builder.Build();
     }
 
-    public JsonElement[] Records()
+    public string[] Lines()
     {
         Logging.Flush();
-        return Directory.GetFiles(Logging.DirectoryPath, "*.jsonl").SelectMany(ReadLines)
-            .Select(line => JsonDocument.Parse(line).RootElement.Clone()).ToArray();
+        return Directory.GetFiles(Logging.DirectoryPath, "*.log").SelectMany(ReadLines).ToArray();
     }
 
     private static IEnumerable<string> ReadLines(string path)
@@ -166,7 +180,9 @@ internal sealed class LoggingFixture : IDisposable
         while (reader.ReadLine() is { } line) { yield return line; }
     }
 
-    public string[] Messages() => Records().Select(record => record.GetProperty("message").GetString()!).ToArray();
+    public string Text() => string.Join('\n', Lines());
+
+    public string[] Messages() => Lines().Select(line => line[(line.IndexOf(" - ", StringComparison.Ordinal) + 3)..]).ToArray();
 
     public void Dispose()
     {

@@ -2,6 +2,7 @@ using Clc.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Clc.Logging;
 
@@ -16,10 +17,10 @@ public static class ClcLoggingBuilderExtensions
     }
 
     public static IHostApplicationBuilder AddClcLogging(this IHostApplicationBuilder builder, string applicationDirectoryName, Action<ClcLoggingOptions>? configure = null) =>
-        AddOwned(builder, () => ClcLogging.Create(applicationDirectoryName, configure));
+        AddOwned(builder, () => ClcLogging.CreateOwned(ClcApplicationPaths.Resolve(applicationDirectoryName), configure));
 
     public static IHostApplicationBuilder AddClcLogging(this IHostApplicationBuilder builder, ClcApplicationPaths paths, Action<ClcLoggingOptions>? configure = null) =>
-        AddOwned(builder, () => ClcLogging.Create(paths, configure));
+        AddOwned(builder, () => ClcLogging.CreateOwned(paths, configure));
 
     /// <summary>Registers caller-owned logging. Dispose it after the host and any fatal-error handler.</summary>
     public static IHostApplicationBuilder AddClcLogging(this IHostApplicationBuilder builder, ClcLogging logging)
@@ -34,9 +35,28 @@ public static class ClcLoggingBuilderExtensions
             throw new InvalidOperationException("Clc.Logging is already registered on this builder.");
         }
         var options = logging.Register(builder.Configuration);
-        builder.Logging.ClearProviders();
-        builder.Services.Configure<LoggerFilterOptions>(options.ApplyFilters);
-        if (owned) { builder.Services.AddSingleton(_ => logging); }
+        // Always supply the native Logging binding, even when a host disables
+        // defaults or binds a different section. Put it before application filters;
+        // a standard host's existing binding keeps its original precedence.
+        var firstNewService = builder.Services.Count;
+        builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
+        var bindings = builder.Services.Skip(firstNewService)
+            .Where(service => service.ServiceType == typeof(IConfigureOptions<LoggerFilterOptions>)).ToArray();
+        foreach (var binding in bindings.Reverse())
+        {
+            builder.Services.Remove(binding);
+            builder.Services.Insert(0, binding);
+        }
+        builder.Services.Configure<LoggerFilterOptions>(options.ApplyOverrides);
+        if (owned)
+        {
+            builder.Services.AddSingleton(_ => logging);
+            // Let the host track ownership even if the application later removes
+            // the NLog provider from its provider collection.
+            builder.Services.AddOptions<LoggerFilterOptions>().PostConfigure<ClcLogging>(
+                (filters, _) => ClcLoggingOptions.ApplyDefaults(filters));
+        }
+        else { builder.Services.PostConfigure<LoggerFilterOptions>(ClcLoggingOptions.ApplyDefaults); }
         builder.Services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider>(services =>
         {
             if (owned) { services.GetRequiredService<ClcLogging>(); }
@@ -49,6 +69,10 @@ public static class ClcLoggingBuilderExtensions
     private static IHostApplicationBuilder AddOwned(IHostApplicationBuilder builder, Func<ClcLogging> create)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        if (builder.Services.Any(service => service.ServiceType == typeof(LoggingRegistration)))
+        {
+            throw new InvalidOperationException("Clc.Logging is already registered on this builder.");
+        }
         var logging = create();
         try
         {

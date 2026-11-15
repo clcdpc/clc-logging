@@ -3,13 +3,28 @@ using Clc.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using NLog.Layouts;
+using NLog.Targets;
 
 // Only the fixture needs an absolute temporary root. Normal startup uses
 // builder.AddClcConfiguration("clc-scheduler-worker") before AddClcLogging().
 var builder = Host.CreateApplicationBuilder();
-var paths = ConfigurationFixture.Paths(args.Single());
+var paths = ConfigurationFixture.Paths(args[0]);
 ConfigurationFixture.Initialize(builder, paths);
-builder.AddClcLogging();
+MemoryTarget? additional = null;
+if (args.Length == 2 && args[1] == "--custom-layout")
+{
+    additional = new MemoryTarget("package-check") { Layout = "${message}" };
+    builder.AddClcLogging(options =>
+    {
+        options.Layout = new SimpleLayout("${level} | ${logger} | ${message} | ${event-properties:EventId} | ${scopeproperty:CorrelationId}");
+        options.ConfigureNLog = configuration => configuration.AddRuleForAllLevels(additional);
+    });
+}
+else
+{
+    builder.AddClcLogging();
+}
 builder.Services.AddHostedService<Worker>();
 using (var host = builder.Build())
 {
@@ -20,6 +35,10 @@ using (var host = builder.Build())
         throw new InvalidOperationException("Worker did not reuse configured application paths.");
     }
     await host.RunAsync();
+}
+if (additional is not null && !additional.Logs.Contains("Worker disposed"))
+{
+    throw new InvalidOperationException("Native NLog target lost the Worker disposal event.");
 }
 Console.WriteLine("Worker package consumer passed.");
 
